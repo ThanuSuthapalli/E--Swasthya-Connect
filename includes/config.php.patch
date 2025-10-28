@@ -1,0 +1,116 @@
+*** Begin Patch
+*** Update File: c:\xampp\htdocs\VillageHealthConnect_Updated\includes\config.php
+@@
+ function updateProblemStatus($problem_id, $new_status, $updated_by, $notes = '') {
+-    try {
+-        $pdo = getDBConnection();
+-
+-        // Get current status
+-        $stmt = $pdo->prepare("SELECT status FROM problems WHERE id = ?");
+-        $stmt->execute([$problem_id]);
+-        $old_status = $stmt->fetchColumn();
+-
+-        if ($old_status === false) {
+-            error_log("Problem not found with ID: " . $problem_id);
+-            return false;
+-        }
+-
+-        error_log("Update problem $problem_id: current=$old_status, new=$new_status, updated_by=$updated_by");
+-
+-        // Update problem status
+-        $resolved_at = ($new_status === 'resolved' || $new_status === 'completed') ? date('Y-m-d H:i:s') : null;
+-        $stmt = $pdo->prepare("UPDATE problems SET status = ?, updated_at = NOW(), resolved_at = ? WHERE id = ?");
+-        $result = $stmt->execute([$new_status, $resolved_at, $problem_id]);
+-
+-        if (!$result) {
+-            error_log("UPDATE failed for problem $problem_id");
+-            return false;
+-        }
+-
+-        $rows_affected = $stmt->rowCount();
+-        error_log("UPDATE executed for problem $problem_id, rows affected: $rows_affected");
+-
+-        if ($rows_affected > 0) {
+-            error_log("Problem $problem_id updated: $old_status -> $new_status");
+-            
+-            // Log the status change
+-            $stmt = $pdo->prepare("INSERT INTO problem_updates (problem_id, updated_by, old_status, new_status, notes) VALUES (?, ?, ?, ?, ?)");
+-            $stmt->execute([$problem_id, $updated_by, $old_status, $new_status, $notes]);
+-
+-            // Create notification
+-            $stmt = $pdo->prepare("SELECT villager_id FROM problems WHERE id = ?");
+-            $stmt->execute([$problem_id]);
+-            $villager_id = $stmt->fetchColumn();
+-
+-            if ($villager_id) {
+-                $message = "Your problem status has been updated to: " . ucfirst(str_replace('_', ' ', $new_status));
+-                if ($notes) {
+-                    $message .= ". Note: " . $notes;
+-                }
+-                addNotification($villager_id, $problem_id, 'Status Update', $message);
+-            }
+-
+-            return true;
+-        }
+-        error_log("No rows updated for problem $problem_id - status may already be $new_status");
+-        return false;
+-    } catch (PDOException $e) {
+-        error_log("Error updating problem status: " . $e->getMessage());
+-        return false;
+-    }
++    try {
++        $pdo = getDBConnection();
++
++        // Get current status
++        $stmt = $pdo->prepare("SELECT status FROM problems WHERE id = ?");
++        $stmt->execute([$problem_id]);
++        $old_status = $stmt->fetchColumn();
++
++        if ($old_status === false) {
++            error_log("Problem not found with ID: " . $problem_id);
++            return false;
++        }
++
++        error_log("Update problem $problem_id: current=$old_status, new=$new_status, updated_by=$updated_by");
++
++        // Prepare resolved_at value
++        $resolved_at = ($new_status === 'resolved' || $new_status === 'completed') ? date('Y-m-d H:i:s') : null;
++
++        // Use a transaction to ensure we always record the update event (even if status value is unchanged)
++        $pdo->beginTransaction();
++
++        // Update problem status (this may not affect rows if status unchanged)
++        $stmt = $pdo->prepare("UPDATE problems SET status = ?, updated_at = NOW(), resolved_at = ? WHERE id = ?");
++        $stmt->execute([$new_status, $resolved_at, $problem_id]);
++
++        $rows_affected = $stmt->rowCount();
++        error_log("UPDATE executed for problem $problem_id, rows affected: $rows_affected");
++
++        // Always insert a record into problem_updates to capture notes and attempted changes
++        $stmt = $pdo->prepare("INSERT INTO problem_updates (problem_id, updated_by, old_status, new_status, notes) VALUES (?, ?, ?, ?, ?)");
++        $stmt->execute([$problem_id, $updated_by, $old_status, $new_status, $notes]);
++
++        // Create notification (fetch villager id)
++        $stmt = $pdo->prepare("SELECT villager_id FROM problems WHERE id = ?");
++        $stmt->execute([$problem_id]);
++        $villager_id = $stmt->fetchColumn();
++
++        if ($villager_id) {
++            $message = "Your problem status has been updated to: " . ucfirst(str_replace('_', ' ', $new_status));
++            if ($notes) {
++                $message .= ". Note: " . $notes;
++            }
++            addNotification($villager_id, $problem_id, 'Status Update', $message);
++        }
++
++        $pdo->commit();
++        return true;
++    } catch (PDOException $e) {
++        if ($pdo && $pdo->inTransaction()) {
++            $pdo->rollBack();
++        }
++        error_log("Error updating problem status: " . $e->getMessage());
++        return false;
++    }
+ }
+*** End Patch
